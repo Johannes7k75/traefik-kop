@@ -530,6 +530,53 @@ func getKopOverrideBinding(dc *dockerCache, conf *dynamic.Configuration, svcType
 	return hostIP, false
 }
 
+// getKopOverrideResolveInternalPort Check for explicit resolve-internal-ports override set via label
+//
+// Label can be one of two keys:
+// - kop.<svcType>.services.<svcName>.resolve-internal-ports = <true|false>
+// - kop.resolve-internal-ports = <true|false>
+//
+// If the label is not set, the default value is used (resolveInternalPorts).
+func getKopOverrideResolveInternalPort(dc *dockerCache, conf *dynamic.Configuration, svcType, svcName string, defaultResolveInternalPorts bool) (resolveInternalPorts bool, changed bool) {
+	routerName := getRouterOfService(conf, svcName, svcType)
+
+	container, err := dc.findContainerByServiceName(svcType, svcName, routerName)
+	if err != nil {
+		log.Debug().Msgf("failed to find container for service '%s': %s", svcName, err)
+		return defaultResolveInternalPorts, false
+	}
+
+	handleParse := func(labelResolvePorts string) (val bool, changed bool) {
+		labelResolvePortsBool, err := strconv.ParseBool(labelResolvePorts)
+		if err != nil {
+			log.Debug().Msgf("failed to parse resolve-internal-ports [%s] label for service '%s': %s", labelResolvePorts, svcName, err)
+			return defaultResolveInternalPorts, false
+		}
+		return labelResolvePortsBool, true
+	}
+
+	// When no service defined traefik generates name.
+	// So we use the routername for the kop label lookup
+	if routerName != svcName {
+		svcName = routerName
+	}
+
+	svcName = stripDocker(svcName)
+	svcNeedle := fmt.Sprintf("kop.%s.services.%s.resolve-internal-ports", svcType, svcName)
+	if labelResolvePorts := container.Config.Labels[svcNeedle]; labelResolvePorts != "" {
+		log.Debug().Msgf("found label %s with ResolveInternalPorts value '%s' for service %s", svcNeedle, labelResolvePorts, svcName)
+		return handleParse(labelResolvePorts)
+
+	}
+
+	if resolveInternalPorts := container.Config.Labels["kop.resolve-internal-ports"]; resolveInternalPorts != "" {
+		log.Debug().Msgf("found label %s with ResolveInternalPorts value '%s' for service %s", "kop.resolve-internal-ports", resolveInternalPorts, svcName)
+		return handleParse(resolveInternalPorts)
+	}
+
+	return defaultResolveInternalPorts, false
+}
+
 // mergeLoadBalancers merges load balancer servers for all protocols (http, tcp, udp) with the LBs
 // found in the Traefik store (redis). This allows kops running on multiple nodes to add their respective
 // IPs so that traefik can properly distribute the load.
