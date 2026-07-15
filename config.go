@@ -31,8 +31,9 @@ type Config struct {
 	RedisSentinelAddrs  []string
 	RedisSentinelMaster string
 
-	PollInterval int64
-	Namespace    []string
+	PollInterval         int64
+	Namespace            []string
+	ResolveInternalPorts bool
 }
 
 type ConfigFile struct {

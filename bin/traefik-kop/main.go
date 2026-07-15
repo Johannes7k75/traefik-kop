@@ -148,6 +148,12 @@ func flags() {
 				Value:   false,
 				EnvVars: []string{"VERBOSE", "DEBUG"},
 			},
+			&cli.BoolFlag{
+				Name:    "resolve-internal-ports",
+				Usage:   "Resolve the internal port to the host port for service",
+				Value:   false,
+				EnvVars: []string{"RESOLVE_INTERNAL_PORTS"},
+			},
 		},
 	}
 
@@ -205,21 +211,22 @@ func doStart(c *cli.Context) error {
 	sentinelAddrs := splitStringArr(c.String("redis-sentinel-addrs"))
 
 	config := traefikkop.Config{
-		Hostname:            c.String("hostname"),
-		BindIP:              bindIP,
-		SkipReplace:         c.Bool("skip-replace"),
-		RedisAddr:           c.String("redis-addr"),
-		RedisUser:           c.String("redis-user"),
-		RedisPass:           c.String("redis-pass"),
-		RedisDB:             c.Int("redis-db"),
-		RedisTTL:            c.Int("redis-ttl"),
-		RedisSentinelAddrs:  sentinelAddrs,
-		RedisSentinelMaster: c.String("redis-sentinel-master"),
-		DockerHost:          c.String("docker-host"),
-		DockerConfig:        c.String("docker-config"),
-		DockerPrefix:        c.String("docker-prefix"),
-		PollInterval:        c.Int64("poll-interval"),
-		Namespace:           namespaces,
+		Hostname:             c.String("hostname"),
+		BindIP:               bindIP,
+		SkipReplace:          c.Bool("skip-replace"),
+		RedisAddr:            c.String("redis-addr"),
+		RedisUser:            c.String("redis-user"),
+		RedisPass:            c.String("redis-pass"),
+		RedisDB:              c.Int("redis-db"),
+		RedisTTL:             c.Int("redis-ttl"),
+		RedisSentinelAddrs:   sentinelAddrs,
+		RedisSentinelMaster:  c.String("redis-sentinel-master"),
+		DockerHost:           c.String("docker-host"),
+		DockerConfig:         c.String("docker-config"),
+		DockerPrefix:         c.String("docker-prefix"),
+		PollInterval:         c.Int64("poll-interval"),
+		Namespace:            namespaces,
+		ResolveInternalPorts: c.Bool("resolve-internal-ports"),
 	}
 
 	if config.BindIP == "" {
