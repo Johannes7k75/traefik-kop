@@ -70,7 +70,7 @@ func createConfigHandler(config Config, store TraefikStore, dp *docker.Provider,
 
 		if !dp.UseBindPortIP && !config.SkipReplace {
 			// if not using traefik's built in IP/Port detection, use our own
-			replaceIPs(dc, &conf, config.BindIP)
+			replaceIPs(dc, &conf, config.BindIP, config.ResolveInternalPorts)
 		} else {
 			log.Debug().Msgf("skipping IP replacement (useBindPortIP=%v, skipReplace=%v)", dp.UseBindPortIP, config.SkipReplace)
 		}
@@ -285,12 +285,15 @@ func filterServices(dc *dockerCache, conf *dynamic.Configuration, ns []string) {
 //
 // When using CNI, as indicated by the container label `traefik.docker.network`,
 // we will stick with the container IP.
-func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, ip string) {
+func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, defaultIp string, defaultResolveInternalPorts bool) {
 	// modify HTTP URLs
 	if conf.HTTP != nil && conf.HTTP.Services != nil {
 		for svcName, svc := range conf.HTTP.Services {
 			log := log.With().Str("service", svcName).Str("service-type", "http").Logger()
 			log.Debug().Msgf("found http service: %s", svcName)
+
+			resolveInternalPorts, _ := getKopOverrideResolveInternalPort(dc, conf, "http", svcName, defaultResolveInternalPorts)
+
 			for i := range svc.LoadBalancer.Servers {
 				ip, changed := getKopOverrideBinding(dc, conf, "http", svcName, ip)
 				if !changed {
@@ -309,7 +312,7 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, ip string) {
 					// labels ourselves.
 					log.Debug().Msgf("using load balancer URL for port detection: %s", server.URL)
 					u, _ := url.Parse(server.URL)
-					p := getContainerPort(dc, conf, "http", svcName, u.Port())
+					p := getContainerPort(dc, conf, "http", svcName, u.Port(), resolveInternalPorts)
 					if p != "" {
 						u.Host = ip + ":" + p
 					} else {
@@ -322,9 +325,9 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, ip string) {
 						scheme = server.Scheme
 					}
 					server.URL = fmt.Sprintf("%s://%s", scheme, ip)
-					port := getContainerPort(dc, conf, "http", svcName, server.Port)
+					port := getContainerPort(dc, conf, "http", svcName, server.Port, resolveInternalPorts)
 					if port != "" {
-						server.URL += ":" + server.Port
+						server.URL += ":" + port
 					}
 				}
 			}
@@ -344,14 +347,15 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, ip string) {
 		for svcName, svc := range conf.TCP.Services {
 			log := log.With().Str("service", svcName).Str("service-type", "tcp").Logger()
 			log.Debug().Msgf("found tcp service: %s", svcName)
+
+			resolveInternalPorts, _ := getKopOverrideResolveInternalPort(dc, conf, "tcp", svcName, defaultResolveInternalPorts)
+
 			for i := range svc.LoadBalancer.Servers {
 				// override with container IP if we have a routable IP
 				ip = getContainerNetworkIP(dc, conf, "tcp", svcName, ip)
 
 				server := &svc.LoadBalancer.Servers[i]
-				server.Port = getContainerPort(dc, conf, "tcp", svcName, server.Port)
-				log.Debug().Msgf("using ip '%s' and port '%s' for %s", ip, server.Port, svcName)
-				server.Address = ip
+				server.Port = getContainerPort(dc, conf, "tcp", svcName, server.Port, resolveInternalPorts)
 				if server.Port != "" {
 					server.Address += ":" + server.Port
 				}
@@ -364,14 +368,15 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, ip string) {
 		for svcName, svc := range conf.UDP.Services {
 			log := log.With().Str("service", svcName).Str("service-type", "udp").Logger()
 			log.Debug().Msgf("found udp service: %s", svcName)
+
+			resolveInternalPorts, _ := getKopOverrideResolveInternalPort(dc, conf, "udp", svcName, defaultResolveInternalPorts)
+
 			for i := range svc.LoadBalancer.Servers {
 				// override with container IP if we have a routable IP
 				ip = getContainerNetworkIP(dc, conf, "udp", svcName, ip)
 
 				server := &svc.LoadBalancer.Servers[i]
-				server.Port = getContainerPort(dc, conf, "udp", svcName, server.Port)
-				log.Debug().Msgf("using ip '%s' and port '%s' for %s", ip, server.Port, svcName)
-				server.Address = ip
+				server.Port = getContainerPort(dc, conf, "udp", svcName, server.Port, resolveInternalPorts)
 				if server.Port != "" {
 					server.Address += ":" + server.Port
 				}
