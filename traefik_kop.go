@@ -295,7 +295,7 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, defaultIp string, 
 			resolveInternalPorts, _ := getKopOverrideResolveInternalPort(dc, conf, "http", svcName, defaultResolveInternalPorts)
 
 			for i := range svc.LoadBalancer.Servers {
-				ip, changed := getKopOverrideBinding(dc, conf, "http", svcName, ip)
+				ip, changed := getKopOverrideBinding(dc, conf, "http", svcName, defaultIp)
 				if !changed {
 					// override with container IP if we have a routable IP
 					ip = getContainerNetworkIP(dc, conf, "http", svcName, ip)
@@ -352,7 +352,7 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, defaultIp string, 
 
 			for i := range svc.LoadBalancer.Servers {
 				// override with container IP if we have a routable IP
-				ip = getContainerNetworkIP(dc, conf, "tcp", svcName, ip)
+				defaultIp = getContainerNetworkIP(dc, conf, "tcp", svcName, defaultIp)
 
 				server := &svc.LoadBalancer.Servers[i]
 				server.Port = getContainerPort(dc, conf, "tcp", svcName, server.Port, resolveInternalPorts)
@@ -373,7 +373,7 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, defaultIp string, 
 
 			for i := range svc.LoadBalancer.Servers {
 				// override with container IP if we have a routable IP
-				ip = getContainerNetworkIP(dc, conf, "udp", svcName, ip)
+				defaultIp = getContainerNetworkIP(dc, conf, "udp", svcName, defaultIp)
 
 				server := &svc.LoadBalancer.Servers[i]
 				server.Port = getContainerPort(dc, conf, "udp", svcName, server.Port, resolveInternalPorts)
