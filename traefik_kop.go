@@ -442,9 +442,11 @@ func getRouterOfService(conf *dynamic.Configuration, svcName string, svcType str
 // traefik during its config parsing (possibly an container-internal port). The
 // purpose of this method is to see if we can find a better match, specifically
 // by looking at the host-port bindings in the docker config.
-func getContainerPort(dc *dockerCache, conf *dynamic.Configuration, svcType string, svcName string, port string) string {
+func getContainerPort(dc *dockerCache, conf *dynamic.Configuration, svcType string, svcName string, port string, resolveInternalPorts bool) string {
 	log := log.With().Str("service", svcName).Str("service-type", svcType).Logger()
-	container, err := dc.findContainerByServiceName(svcType, svcName, getRouterOfService(conf, svcName, svcType))
+	routerName := getRouterOfService(conf, svcName, svcType)
+
+	container, err := dc.findContainerByServiceName(svcType, svcName, routerName)
 	if err != nil {
 		log.Warn().Msgf("failed to find host-port: %s", err)
 		return port
@@ -455,6 +457,37 @@ func getContainerPort(dc *dockerCache, conf *dynamic.Configuration, svcType stri
 		log.Debug().Msgf("using internal kop label set port %s for %s", inp, svcName)
 		return inp
 	}
+
+	if explicitPort := isPortSet(container, svcType, svcName); explicitPort != "" {
+		if !resolveInternalPorts {
+			log.Debug().Str("port", explicitPort).Str("service", svcName).Msg("Using explicitly set port")
+			return explicitPort
+		}
+
+		log.Debug().Str("internalPort", explicitPort).Str("service", svcName).Msg("Using internal set port")
+
+		protocol := getSvcProtocol(svcType)
+		if hostPort := getHostPort(container, protocol, explicitPort); hostPort != "" {
+			log.Debug().Str("internalPort", explicitPort).Str("hostPort", hostPort).Msg("Overriding internal set port with host-port")
+			return hostPort
+		}
+
+		log.Warn().Str("internalPort", explicitPort).Msg("No host-port binding found for internal port, defaulting to internal port")
+		return explicitPort
+	}
+
+	if resolveInternalPorts && port != "" {
+		protocol := getSvcProtocol(svcType)
+		if hostPort := getHostPort(container, protocol, port); hostPort != "" {
+			log.Debug().Str("internalPort", port).Str("hostPort", hostPort).Str("service", svcName).Msg("Resolved internal port to host-port")
+			return hostPort
+		}
+
+		log.Debug().Str("internalPort", port).Msg("No host-port binding found for internal port, falling back")
+		return port
+	}
+
+	log.Debug().Msgf("ServiceType: %s, Protocol: %s", svcType, getSvcProtocol(svcType))
 	exposedPort, err := getPortBinding(container, getSvcProtocol(svcType))
 	if err != nil {
 		if strings.Contains(err.Error(), "no host-port binding") {
