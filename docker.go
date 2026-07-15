@@ -140,16 +140,24 @@ func isPortSet(container container.InspectResponse, svcType string, svcName stri
 // If more than one port is bound (e.g., for a service like minio), then this
 // detection will fail. Instead, the user should explicitly set the port in the
 // label.
-func getPortBinding(container container.InspectResponse) (string, error) {
+func getPortBinding(container container.InspectResponse, protocol string) (string, error) {
 	log.Debug().Msg("looking for port in host config bindings")
-	numBindings := len(container.HostConfig.PortBindings)
-	log.Debug().Msgf("found %d host-port bindings", numBindings)
-	if numBindings > 1 {
-		return "", errors.Errorf("found more than one host-port binding for container '%s' (%s)", container.Name, portBindingString(container.HostConfig.PortBindings))
+
+	protocolBindings := make(nat.PortMap)
+	for bindPort, bindings := range container.HostConfig.PortBindings {
+		if bindPort.Proto() == protocol {
+			protocolBindings[bindPort] = bindings
+		}
 	}
-	for _, v := range container.HostConfig.PortBindings {
+	log.Debug().Msgf("found %d %s host-port bindings", len(protocolBindings), protocol)
+
+	if len(protocolBindings) > 1 {
+		return "", errors.Errorf("found more than one %s host-port binding for container '%s' (%s)", protocol, container.Name, portBindingString(protocolBindings))
+	}
+
+	for _, v := range protocolBindings {
 		if len(v) > 1 {
-			return "", errors.Errorf("found more than one host-port binding for container '%s' (%s)", container.Name, portBindingString(container.HostConfig.PortBindings))
+			return "", errors.Errorf("found more than one host-port binding for container '%s' (%s)", container.Name, portBindingString(protocolBindings))
 		}
 		if v[0].HostPort != "" {
 			log.Debug().Msgf("found host-port binding %s", v[0].HostPort)
@@ -160,7 +168,10 @@ func getPortBinding(container container.InspectResponse) (string, error) {
 	// check for a randomly set port via --publish-all
 	if container.NetworkSettings != nil && len(container.NetworkSettings.Ports) == 1 {
 		log.Debug().Msg("looking for [randomly set] port in network settings")
-		for _, v := range container.NetworkSettings.Ports {
+		for k, v := range container.NetworkSettings.Ports {
+			if k.Proto() != protocol {
+				continue
+			}
 			if len(v) > 0 {
 				port := v[0].HostPort
 				if port != "" {

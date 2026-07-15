@@ -429,11 +429,7 @@ func getContainerPort(dc *dockerCache, conf *dynamic.Configuration, svcType stri
 		log.Warn().Msgf("failed to find host-port: %s", err)
 		return port
 	}
-	if p := isPortSet(container, svcType, svcName); p != "" {
-		log.Debug().Msgf("using explicitly set port %s for %s", p, svcName)
-		return p
-	}
-	exposedPort, err := getPortBinding(container)
+	exposedPort, err := getPortBinding(container, getSvcProtocol(svcType))
 	if err != nil {
 		if strings.Contains(err.Error(), "no host-port binding") {
 			log.Debug().Err(err)
@@ -449,6 +445,18 @@ func getContainerPort(dc *dockerCache, conf *dynamic.Configuration, svcType stri
 	}
 	log.Debug().Msgf("overriding service port from container host-port: using %s (was %s) for %s", exposedPort, port, svcName)
 	return exposedPort
+}
+
+// getSvcProtocol returns the protocol for the given service type
+func getSvcProtocol(svcType string) string {
+	switch svcType {
+	case "tcp":
+		return "tcp"
+	case "udp":
+		return "udp"
+	default:
+		return "tcp"
+	}
 }
 
 // Gets the container IP when it is configured to use a network-routable address
