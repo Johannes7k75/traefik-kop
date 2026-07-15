@@ -3,6 +3,7 @@ package traefikkop
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -355,7 +356,14 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, defaultIp string, 
 				defaultIp = getContainerNetworkIP(dc, conf, "tcp", svcName, defaultIp)
 
 				server := &svc.LoadBalancer.Servers[i]
+				if server.Address != "" {
+					if _, p, err := net.SplitHostPort(server.Address); err == nil && p != "" {
+						server.Port = p
+					}
+				}
 				server.Port = getContainerPort(dc, conf, "tcp", svcName, server.Port, resolveInternalPorts)
+
+				server.Address = defaultIp
 				if server.Port != "" {
 					server.Address += ":" + server.Port
 				}
@@ -376,7 +384,14 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, defaultIp string, 
 				defaultIp = getContainerNetworkIP(dc, conf, "udp", svcName, defaultIp)
 
 				server := &svc.LoadBalancer.Servers[i]
+				if server.Address != "" {
+					if _, p, err := net.SplitHostPort(server.Address); err == nil && p != "" {
+						server.Port = p
+					}
+				}
 				server.Port = getContainerPort(dc, conf, "udp", svcName, server.Port, resolveInternalPorts)
+
+				server.Address = defaultIp
 				if server.Port != "" {
 					server.Address += ":" + server.Port
 				}
