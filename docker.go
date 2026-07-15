@@ -129,6 +129,95 @@ func isPortSet(container container.InspectResponse, svcType string, svcName stri
 	return container.Config.Labels[needle]
 }
 
+// isKopInternalPortSet checks the docker container config for an internal port set via label
+//
+// # Returns the host port for the internal set port
+//
+// i.e., it looks for the following from a docker-compose service:
+//
+// ports:
+//   - "5555:55"
+//
+// labels:
+//   - "kop.<svcType>.services.<svcName>.resolve-port=55"
+//
+// if the label "kop.<svcType>.services.<svcName>.resolve-port" is set, returns the host port
+// for the internal port, so here it would return "5555"
+func isKopInternalPortSet(container container.InspectResponse, svcType string, svcName string, routerName string) string {
+	log.Debug().Msg("looking for the internal port in host config bindings")
+	numBindings := len(container.HostConfig.PortBindings)
+	log.Debug().Msgf("found %d host-port bindings", numBindings)
+
+	// When no service defined traefik generates name.
+	// So we use the routername for the kop label lookup
+	if routerName != svcName {
+		svcName = routerName
+	}
+
+	svcName = stripDocker(svcName)
+	needle := fmt.Sprintf("kop.%s.services.%s.resolve-port", svcType, svcName)
+	internalPort := container.Config.Labels[needle]
+
+	if internalPort == "" {
+		log.Debug().Msgf("no kop internal port found for %s/%s", svcType, svcName)
+		return ""
+	}
+	log.Debug().Msgf("found kop internal port '%s' now resolving to host port", internalPort)
+
+	return getHostPort(container, getSvcProtocol(svcType), internalPort)
+}
+
+// getHostPort checks the docker container config for the internal port of the service
+//
+// i.e., it looks for the following from a docker-compose service:
+//
+// ports:
+//   - 5555:55
+//   - 6666:66
+//
+// Searches for the port specified by `port` and returns the host port if found.
+// For example, if `port` is "55", returns "5555".
+func getHostPort(container container.InspectResponse, protocol string, internalPort string) string {
+	log.Debug().Msgf("looking for internal port %s in host config bindings", internalPort)
+
+	protocolBindings := make(nat.PortMap)
+	for bindPort, bindings := range container.HostConfig.PortBindings {
+		if bindPort.Proto() == protocol {
+			protocolBindings[bindPort] = bindings
+		}
+	}
+	log.Debug().Msgf("found %d %s host-port bindings", len(protocolBindings), protocol)
+
+	for k, v := range protocolBindings {
+		if len(v) == 0 {
+			continue
+		}
+
+		if k.Port() == internalPort && v[0].HostPort != "" {
+			log.Debug().Msgf("found host-port binding %s for internal port %s", v[0].HostPort, internalPort)
+			return v[0].HostPort
+		}
+	}
+
+	if container.NetworkSettings != nil && len(container.NetworkSettings.Ports) > 0 {
+		log.Debug().Msgf("looking for [randomly set] host port in network settings for internal port %s", internalPort)
+		for k, v := range container.NetworkSettings.Ports {
+			if len(v) == 0 || k.Proto() != protocol {
+				continue
+			}
+			if k.Port() == internalPort && v[0].HostPort != "" {
+				if len(v) > 1 {
+					log.Warn().Msgf("found %d host-port bindings for internal port %s, using the first one", len(v), internalPort)
+				}
+				return v[0].HostPort
+			}
+		}
+	}
+
+	log.Error().Msgf("no host-port binding found for internal port %s", internalPort)
+	return ""
+}
+
 // getPortBinding checks the docker container config for a port binding for the
 // service. Currently this will only work if a single port is mapped/exposed.
 //

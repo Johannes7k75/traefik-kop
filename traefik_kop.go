@@ -429,6 +429,12 @@ func getContainerPort(dc *dockerCache, conf *dynamic.Configuration, svcType stri
 		log.Warn().Msgf("failed to find host-port: %s", err)
 		return port
 	}
+
+	log.Debug().Msgf("getting port %s for %s/%s", port, svcType, svcName)
+	if inp := isKopInternalPortSet(container, svcType, svcName, routerName); inp != "" {
+		log.Debug().Msgf("using internal kop label set port %s for %s", inp, svcName)
+		return inp
+	}
 	exposedPort, err := getPortBinding(container, getSvcProtocol(svcType))
 	if err != nil {
 		if strings.Contains(err.Error(), "no host-port binding") {
