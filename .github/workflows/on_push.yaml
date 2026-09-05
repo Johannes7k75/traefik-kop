@@ -106,7 +106,7 @@ jobs:
         run: |
           # traefik-kop images
           docker images \
-            | grep ghcr.io/Johannes7k75/traefik-kop \
+            | grep ghcr.io/johannes7k75/traefik-kop \
             | awk '{print $3}' \
             | sort | uniq \
             | xargs -r docker rmi -f
