@@ -3,6 +3,7 @@ package traefikkop
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -70,7 +71,7 @@ func createConfigHandler(config Config, store TraefikStore, dp *docker.Provider,
 
 		if !dp.UseBindPortIP && !config.SkipReplace {
 			// if not using traefik's built in IP/Port detection, use our own
-			replaceIPs(dc, &conf, config.BindIP)
+			replaceIPs(dc, &conf, config.BindIP, config.ResolveInternalPorts)
 		} else {
 			log.Debug().Msgf("skipping IP replacement (useBindPortIP=%v, skipReplace=%v)", dp.UseBindPortIP, config.SkipReplace)
 		}
@@ -285,14 +286,17 @@ func filterServices(dc *dockerCache, conf *dynamic.Configuration, ns []string) {
 //
 // When using CNI, as indicated by the container label `traefik.docker.network`,
 // we will stick with the container IP.
-func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, ip string) {
+func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, defaultIp string, defaultResolveInternalPorts bool) {
 	// modify HTTP URLs
 	if conf.HTTP != nil && conf.HTTP.Services != nil {
 		for svcName, svc := range conf.HTTP.Services {
 			log := log.With().Str("service", svcName).Str("service-type", "http").Logger()
 			log.Debug().Msgf("found http service: %s", svcName)
+
+			resolveInternalPorts, _ := getKopOverrideResolveInternalPort(dc, conf, "http", svcName, defaultResolveInternalPorts)
+
 			for i := range svc.LoadBalancer.Servers {
-				ip, changed := getKopOverrideBinding(dc, conf, "http", svcName, ip)
+				ip, changed := getKopOverrideBinding(dc, conf, "http", svcName, defaultIp)
 				if !changed {
 					// override with container IP if we have a routable IP
 					ip = getContainerNetworkIP(dc, conf, "http", svcName, ip)
@@ -309,7 +313,7 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, ip string) {
 					// labels ourselves.
 					log.Debug().Msgf("using load balancer URL for port detection: %s", server.URL)
 					u, _ := url.Parse(server.URL)
-					p := getContainerPort(dc, conf, "http", svcName, u.Port())
+					p := getContainerPort(dc, conf, "http", svcName, u.Port(), resolveInternalPorts)
 					if p != "" {
 						u.Host = ip + ":" + p
 					} else {
@@ -322,9 +326,9 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, ip string) {
 						scheme = server.Scheme
 					}
 					server.URL = fmt.Sprintf("%s://%s", scheme, ip)
-					port := getContainerPort(dc, conf, "http", svcName, server.Port)
+					port := getContainerPort(dc, conf, "http", svcName, server.Port, resolveInternalPorts)
 					if port != "" {
-						server.URL += ":" + server.Port
+						server.URL += ":" + port
 					}
 				}
 			}
@@ -344,14 +348,22 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, ip string) {
 		for svcName, svc := range conf.TCP.Services {
 			log := log.With().Str("service", svcName).Str("service-type", "tcp").Logger()
 			log.Debug().Msgf("found tcp service: %s", svcName)
+
+			resolveInternalPorts, _ := getKopOverrideResolveInternalPort(dc, conf, "tcp", svcName, defaultResolveInternalPorts)
+
 			for i := range svc.LoadBalancer.Servers {
 				// override with container IP if we have a routable IP
-				ip = getContainerNetworkIP(dc, conf, "tcp", svcName, ip)
+				defaultIp = getContainerNetworkIP(dc, conf, "tcp", svcName, defaultIp)
 
 				server := &svc.LoadBalancer.Servers[i]
-				server.Port = getContainerPort(dc, conf, "tcp", svcName, server.Port)
-				log.Debug().Msgf("using ip '%s' and port '%s' for %s", ip, server.Port, svcName)
-				server.Address = ip
+				if server.Address != "" {
+					if _, p, err := net.SplitHostPort(server.Address); err == nil && p != "" {
+						server.Port = p
+					}
+				}
+				server.Port = getContainerPort(dc, conf, "tcp", svcName, server.Port, resolveInternalPorts)
+
+				server.Address = defaultIp
 				if server.Port != "" {
 					server.Address += ":" + server.Port
 				}
@@ -364,14 +376,22 @@ func replaceIPs(dc *dockerCache, conf *dynamic.Configuration, ip string) {
 		for svcName, svc := range conf.UDP.Services {
 			log := log.With().Str("service", svcName).Str("service-type", "udp").Logger()
 			log.Debug().Msgf("found udp service: %s", svcName)
+
+			resolveInternalPorts, _ := getKopOverrideResolveInternalPort(dc, conf, "udp", svcName, defaultResolveInternalPorts)
+
 			for i := range svc.LoadBalancer.Servers {
 				// override with container IP if we have a routable IP
-				ip = getContainerNetworkIP(dc, conf, "udp", svcName, ip)
+				defaultIp = getContainerNetworkIP(dc, conf, "udp", svcName, defaultIp)
 
 				server := &svc.LoadBalancer.Servers[i]
-				server.Port = getContainerPort(dc, conf, "udp", svcName, server.Port)
-				log.Debug().Msgf("using ip '%s' and port '%s' for %s", ip, server.Port, svcName)
-				server.Address = ip
+				if server.Address != "" {
+					if _, p, err := net.SplitHostPort(server.Address); err == nil && p != "" {
+						server.Port = p
+					}
+				}
+				server.Port = getContainerPort(dc, conf, "udp", svcName, server.Port, resolveInternalPorts)
+
+				server.Address = defaultIp
 				if server.Port != "" {
 					server.Address += ":" + server.Port
 				}
@@ -422,18 +442,53 @@ func getRouterOfService(conf *dynamic.Configuration, svcName string, svcType str
 // traefik during its config parsing (possibly an container-internal port). The
 // purpose of this method is to see if we can find a better match, specifically
 // by looking at the host-port bindings in the docker config.
-func getContainerPort(dc *dockerCache, conf *dynamic.Configuration, svcType string, svcName string, port string) string {
+func getContainerPort(dc *dockerCache, conf *dynamic.Configuration, svcType string, svcName string, port string, resolveInternalPorts bool) string {
 	log := log.With().Str("service", svcName).Str("service-type", svcType).Logger()
-	container, err := dc.findContainerByServiceName(svcType, svcName, getRouterOfService(conf, svcName, svcType))
+	routerName := getRouterOfService(conf, svcName, svcType)
+
+	container, err := dc.findContainerByServiceName(svcType, svcName, routerName)
 	if err != nil {
 		log.Warn().Msgf("failed to find host-port: %s", err)
 		return port
 	}
-	if p := isPortSet(container, svcType, svcName); p != "" {
-		log.Debug().Msgf("using explicitly set port %s for %s", p, svcName)
-		return p
+
+	log.Debug().Msgf("getting port %s for %s/%s", port, svcType, svcName)
+	if inp := isKopInternalPortSet(container, svcType, svcName, routerName); inp != "" {
+		log.Debug().Msgf("using internal kop label set port %s for %s", inp, svcName)
+		return inp
 	}
-	exposedPort, err := getPortBinding(container)
+
+	if explicitPort := isPortSet(container, svcType, svcName); explicitPort != "" {
+		if !resolveInternalPorts {
+			log.Debug().Str("port", explicitPort).Str("service", svcName).Msg("Using explicitly set port")
+			return explicitPort
+		}
+
+		log.Debug().Str("internalPort", explicitPort).Str("service", svcName).Msg("Using internal set port")
+
+		protocol := getSvcProtocol(svcType)
+		if hostPort := getHostPort(container, protocol, explicitPort); hostPort != "" {
+			log.Debug().Str("internalPort", explicitPort).Str("hostPort", hostPort).Msg("Overriding internal set port with host-port")
+			return hostPort
+		}
+
+		log.Warn().Str("internalPort", explicitPort).Msg("No host-port binding found for internal port, defaulting to internal port")
+		return explicitPort
+	}
+
+	if resolveInternalPorts && port != "" {
+		protocol := getSvcProtocol(svcType)
+		if hostPort := getHostPort(container, protocol, port); hostPort != "" {
+			log.Debug().Str("internalPort", port).Str("hostPort", hostPort).Str("service", svcName).Msg("Resolved internal port to host-port")
+			return hostPort
+		}
+
+		log.Debug().Str("internalPort", port).Msg("No host-port binding found for internal port, falling back")
+		return port
+	}
+
+	log.Debug().Msgf("ServiceType: %s, Protocol: %s", svcType, getSvcProtocol(svcType))
+	exposedPort, err := getPortBinding(container, getSvcProtocol(svcType))
 	if err != nil {
 		if strings.Contains(err.Error(), "no host-port binding") {
 			log.Debug().Err(err)
@@ -449,6 +504,18 @@ func getContainerPort(dc *dockerCache, conf *dynamic.Configuration, svcType stri
 	}
 	log.Debug().Msgf("overriding service port from container host-port: using %s (was %s) for %s", exposedPort, port, svcName)
 	return exposedPort
+}
+
+// getSvcProtocol returns the protocol for the given service type
+func getSvcProtocol(svcType string) string {
+	switch svcType {
+	case "tcp":
+		return "tcp"
+	case "udp":
+		return "udp"
+	default:
+		return "tcp"
+	}
 }
 
 // Gets the container IP when it is configured to use a network-routable address
@@ -509,6 +576,53 @@ func getKopOverrideBinding(dc *dockerCache, conf *dynamic.Configuration, svcType
 	}
 
 	return hostIP, false
+}
+
+// getKopOverrideResolveInternalPort Check for explicit resolve-internal-ports override set via label
+//
+// Label can be one of two keys:
+// - kop.<svcType>.services.<svcName>.resolve-internal-ports = <true|false>
+// - kop.resolve-internal-ports = <true|false>
+//
+// If the label is not set, the default value is used (resolveInternalPorts).
+func getKopOverrideResolveInternalPort(dc *dockerCache, conf *dynamic.Configuration, svcType, svcName string, defaultResolveInternalPorts bool) (resolveInternalPorts bool, changed bool) {
+	routerName := getRouterOfService(conf, svcName, svcType)
+
+	container, err := dc.findContainerByServiceName(svcType, svcName, routerName)
+	if err != nil {
+		log.Debug().Msgf("failed to find container for service '%s': %s", svcName, err)
+		return defaultResolveInternalPorts, false
+	}
+
+	handleParse := func(labelResolvePorts string) (val bool, changed bool) {
+		labelResolvePortsBool, err := strconv.ParseBool(labelResolvePorts)
+		if err != nil {
+			log.Debug().Msgf("failed to parse resolve-internal-ports [%s] label for service '%s': %s", labelResolvePorts, svcName, err)
+			return defaultResolveInternalPorts, false
+		}
+		return labelResolvePortsBool, true
+	}
+
+	// When no service defined traefik generates name.
+	// So we use the routername for the kop label lookup
+	if routerName != svcName {
+		svcName = routerName
+	}
+
+	svcName = stripDocker(svcName)
+	svcNeedle := fmt.Sprintf("kop.%s.services.%s.resolve-internal-ports", svcType, svcName)
+	if labelResolvePorts := container.Config.Labels[svcNeedle]; labelResolvePorts != "" {
+		log.Debug().Msgf("found label %s with ResolveInternalPorts value '%s' for service %s", svcNeedle, labelResolvePorts, svcName)
+		return handleParse(labelResolvePorts)
+
+	}
+
+	if resolveInternalPorts := container.Config.Labels["kop.resolve-internal-ports"]; resolveInternalPorts != "" {
+		log.Debug().Msgf("found label %s with ResolveInternalPorts value '%s' for service %s", "kop.resolve-internal-ports", resolveInternalPorts, svcName)
+		return handleParse(resolveInternalPorts)
+	}
+
+	return defaultResolveInternalPorts, false
 }
 
 // mergeLoadBalancers merges load balancer servers for all protocols (http, tcp, udp) with the LBs
