@@ -1,4 +1,4 @@
-module github.com/jittering/traefik-kop
+module github.com/Johannes7k75/traefik-kop
 
 go 1.24.0
 
